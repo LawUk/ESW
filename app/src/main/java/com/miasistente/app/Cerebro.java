@@ -69,6 +69,26 @@ public class Cerebro {
         }
     }
 
+    /** Igual que http, pero reintenta cuando el servicio esta saturado (errores 500, 503, 529). */
+    static JSONObject pedir(String url, String cabecera, String valor, JSONObject cuerpo) throws ErrorApi {
+        ErrorApi ultimo = null;
+        for (int intento = 0; intento < 3; intento++) {
+            try {
+                return http(url, cabecera, valor, cuerpo);
+            } catch (ErrorApi e) {
+                ultimo = e;
+                if (e.codigo != 500 && e.codigo != 503 && e.codigo != 529) throw e;
+                try {
+                    Thread.sleep(1500L * (intento + 1));
+                } catch (InterruptedException interrumpido) {
+                    Thread.currentThread().interrupt();
+                    throw e;
+                }
+            }
+        }
+        throw ultimo;
+    }
+
     private static String leer(InputStream in) throws java.io.IOException {
         if (in == null) return "";
         ByteArrayOutputStream salida = new ByteArrayOutputStream();
@@ -101,7 +121,13 @@ public class Cerebro {
                 if (m == null) continue;
                 String id = m.optString("id");
                 if (id.startsWith("models/")) id = id.substring(7);
-                if (!id.isEmpty()) ids.add(id);
+                String bajo = id.toLowerCase(Locale.ROOT);
+                boolean noSirve = false;
+                for (String malo : new String[]{"tts", "image", "imagen", "embed", "live", "audio", "robotics",
+                        "veo", "aqa", "gemma", "whisper", "guard", "lyria", "omni", "computer-use", "deep-research"}) {
+                    if (bajo.contains(malo)) noSirve = true;
+                }
+                if (!id.isEmpty() && !noSirve) ids.add(id);
             }
         }
         Collections.sort(ids);
@@ -220,7 +246,7 @@ public class Cerebro {
             if (base.contains("groq.com")) {
                 JSONObject cuerpo = new JSONObject().put("model", "groq/compound-mini")
                         .put("messages", new JSONArray().put(new JSONObject().put("role", "user").put("content", pregunta)));
-                JSONObject r = http(base + "/chat/completions", "Authorization", "Bearer " + clave, cuerpo);
+                JSONObject r = pedir(base + "/chat/completions", "Authorization", "Bearer " + clave, cuerpo);
                 JSONObject m = r.getJSONArray("choices").getJSONObject(0).getJSONObject("message");
                 return new JSONObject().put("resultado", m.isNull("content") ? "Sin resultados." : m.optString("content"));
             }
@@ -229,7 +255,7 @@ public class Cerebro {
                         .put("contents", new JSONArray().put(new JSONObject().put("role", "user")
                                 .put("parts", new JSONArray().put(new JSONObject().put("text", pregunta)))))
                         .put("tools", new JSONArray().put(new JSONObject().put("google_search", new JSONObject())));
-                JSONObject r = http("https://generativelanguage.googleapis.com/v1beta/models/"
+                JSONObject r = pedir("https://generativelanguage.googleapis.com/v1beta/models/"
                         + Ajustes.modelo(ctx) + ":generateContent", "x-goog-api-key", clave, cuerpo);
                 JSONArray partes = r.getJSONArray("candidates").getJSONObject(0)
                         .getJSONObject("content").getJSONArray("parts");
@@ -274,13 +300,25 @@ public class Cerebro {
         try {
             historial.add(new JSONObject().put("role", "user").put("content", mensaje));
             JSONArray herramientas = herramientas();
+            boolean conHerramientas = true;
             for (int vuelta = 0; vuelta < 6; vuelta++) {
                 JSONArray mensajes = new JSONArray()
                         .put(new JSONObject().put("role", "system").put("content", instrucciones(ctx)));
                 for (JSONObject m : historial) mensajes.put(m);
-                JSONObject cuerpo = new JSONObject().put("model", Ajustes.modelo(ctx))
-                        .put("messages", mensajes).put("tools", herramientas);
-                JSONObject r = http(base + "/chat/completions", "Authorization", "Bearer " + clave, cuerpo);
+                JSONObject cuerpo = new JSONObject().put("model", Ajustes.modelo(ctx)).put("messages", mensajes);
+                if (conHerramientas) cuerpo.put("tools", herramientas);
+                JSONObject r;
+                try {
+                    r = pedir(base + "/chat/completions", "Authorization", "Bearer " + clave, cuerpo);
+                } catch (ErrorApi e) {
+                    String motivo = String.valueOf(e.getMessage()).toLowerCase(Locale.ROOT);
+                    boolean sinSoporte = motivo.contains("function calling") || motivo.contains("tool use")
+                            || motivo.contains("tools is not supported") || motivo.contains("does not support tools");
+                    if (!conHerramientas || !sinSoporte) throw e;
+                    conHerramientas = false; // este modelo solo conversa: se repite la pregunta sin herramientas
+                    cuerpo.remove("tools");
+                    r = pedir(base + "/chat/completions", "Authorization", "Bearer " + clave, cuerpo);
+                }
                 JSONObject m = r.getJSONArray("choices").getJSONObject(0).getJSONObject("message");
                 JSONArray llamadas = m.optJSONArray("tool_calls");
                 String contenido = m.isNull("content") ? "" : m.optString("content").trim();
@@ -313,7 +351,10 @@ public class Cerebro {
             return "Me enrede con esa tarea. Intenta pedirla en partes.";
         } catch (ErrorApi e) {
             while (historial.size() > inicio) historial.remove(historial.size() - 1);
-            if (e.codigo == 0) return "No tengo conexion a internet en este momento.";
+            if (e.codigo == 0) return "No pude comunicarme con el servicio. Detalle: " + e.getMessage();
+            if (e.codigo == 500 || e.codigo == 503 || e.codigo == 529) {
+                return "El modelo esta saturado en este momento. Prueba otro modelo en Ajustes, o usa Groq.";
+            }
             if (e.codigo == 429) return "Se alcanzo el limite gratuito por ahora. Intenta en unos minutos.";
             if (e.codigo == 401 || e.codigo == 403) return "El servicio rechazo la clave. Revisala en Ajustes.";
             if (e.codigo == 404) return "Ese modelo no existe en este servicio. En Ajustes, usa Elegir modelo de la lista.";
