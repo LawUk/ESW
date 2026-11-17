@@ -28,7 +28,7 @@ public class Notis extends NotificationListenerService {
         Notis yo = instancia;
         if (yo == null) {
             return new JSONObject().put("error",
-                    "Falta el permiso de acceso a notificaciones. Se activa en la app: Ajustes, Permiso para leer notificaciones.");
+                    "La lectura de notificaciones no esta disponible en esta version de la app.");
         }
         StatusBarNotification[] activas;
         try {

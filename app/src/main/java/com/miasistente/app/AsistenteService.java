@@ -40,16 +40,24 @@ import java.util.concurrent.Executors;
 public class AsistenteService extends Service {
 
     public interface Pantalla {
-        void linea(String texto);
+        void linea(int quien, String texto);
 
-        void estado(String texto);
+        void estado(String texto, int modo);
+
+        void nivel(float nivel);
     }
+
+    // Lo que esta haciendo el asistente (la cara cambia con esto)
+    public static final int APAGADO = 0, ESPERA = 1, ESCUCHA = 2, PIENSA = 3, HABLA = 4, MUDO = 5, CARGA = 6;
+    // Quien dice cada linea de la conversacion
+    public static final int YO = 0, ASISTENTE = 1, SISTEMA = 2;
 
     static final String CANAL = "asistente";
     static volatile AsistenteService instancia;
     static volatile Pantalla pantalla;
     static volatile String ultimoEstado = "Apagado";
-    private static final StringBuilder REGISTRO = new StringBuilder();
+    static volatile int ultimoModo = APAGADO;
+    private static final ArrayList<String[]> LINEAS = new ArrayList<>();
 
     private final Handler principal = new Handler(Looper.getMainLooper());
     private final ExecutorService hilo = Executors.newSingleThreadExecutor();
@@ -65,25 +73,37 @@ public class AsistenteService extends Service {
     private boolean ocupado;
     private boolean seguirEscuchando;
 
-    static synchronized String registro() {
-        return REGISTRO.toString();
+    /** Copia de la conversacion: cada elemento es {quien, texto}. */
+    static synchronized List<String[]> lineas() {
+        return new ArrayList<>(LINEAS);
     }
 
-    private static synchronized void anotar(String texto) {
-        REGISTRO.append(texto).append("\n\n");
-        if (REGISTRO.length() > 20000) REGISTRO.delete(0, REGISTRO.length() - 15000);
+    private static synchronized void anotar(int quien, String texto) {
+        LINEAS.add(new String[]{String.valueOf(quien), texto});
+        while (LINEAS.size() > 200) LINEAS.remove(0);
+    }
+
+    private void linea(int quien, String texto) {
+        anotar(quien, texto);
+        Pantalla p = pantalla;
+        if (p != null) p.linea(quien, texto);
     }
 
     private void linea(String texto) {
-        anotar(texto);
-        Pantalla p = pantalla;
-        if (p != null) p.linea(texto);
+        linea(SISTEMA, texto);
     }
 
-    private void estado(String texto) {
+    private void estado(String texto, int modo) {
         ultimoEstado = texto;
+        ultimoModo = modo;
         Pantalla p = pantalla;
-        if (p != null) p.estado(texto);
+        if (p != null) p.estado(texto, modo);
+    }
+
+    /** Vuelve al reposo: esperar el nombre, o quedarse en silencio si el microfono esta apagado. */
+    private void reposo() {
+        if (Ajustes.despertar(this)) iniciarDespertar();
+        else estado("Silenciado. Toca el microfono para hablar.", MUDO);
     }
 
     @Override
@@ -131,9 +151,12 @@ public class AsistenteService extends Service {
                 new Intent(this, AsistenteService.class).setAction("HABLAR"), banderas);
         PendingIntent apagar = PendingIntent.getService(this, 2,
                 new Intent(this, AsistenteService.class).setAction("PARAR"), banderas);
-        String texto = Ajustes.despertar(this)
+        PendingIntent mudo = PendingIntent.getService(this, 3,
+                new Intent(this, AsistenteService.class).setAction("MUDO"), banderas);
+        boolean oyendo = Ajustes.despertar(this);
+        String texto = oyendo
                 ? "Di \"" + Ajustes.nombre(this) + "\" o toca Hablar"
-                : "Toca Hablar para darme una orden";
+                : "Silenciado: no te escucho. Toca Hablar para darme una orden";
         return new Notification.Builder(this, CANAL)
                 .setSmallIcon(android.R.drawable.ic_btn_speak_now)
                 .setContentTitle(Ajustes.nombre(this) + " esta activo")
@@ -141,12 +164,15 @@ public class AsistenteService extends Service {
                 .setContentIntent(abrir)
                 .setOngoing(true)
                 .addAction(new Notification.Action.Builder(null, "Hablar", hablar).build())
+                .addAction(new Notification.Action.Builder(null, oyendo ? "Silenciar" : "Volver a escuchar", mudo).build())
                 .addAction(new Notification.Action.Builder(null, "Apagar", apagar).build())
                 .build();
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        String accion = intent == null || intent.getAction() == null ? "INICIAR" : intent.getAction();
+        if ("MUDO".equals(accion)) Ajustes.despertar(this, !Ajustes.despertar(this));
         try {
             if (Build.VERSION.SDK_INT >= 30) {
                 startForeground(1, notificacion(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
@@ -158,7 +184,6 @@ public class AsistenteService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        String accion = intent == null || intent.getAction() == null ? "INICIAR" : intent.getAction();
         switch (accion) {
             case "PARAR":
                 stopForeground(true);
@@ -177,14 +202,14 @@ public class AsistenteService extends Service {
                     else procesar(texto.trim(), false);
                 }
                 break;
+            case "MUDO":
             case "RECARGAR":
                 detenerVosk();
-                iniciarDespertar();
+                if (!ocupado) reposo();
                 break;
             default:
-                iniciarDespertar();
+                if (!ocupado) reposo();
         }
-        if (!ocupado && !Ajustes.despertar(this)) estado("Listo. Toca Hablar o escribe.");
         return START_STICKY;
     }
 
@@ -195,7 +220,7 @@ public class AsistenteService extends Service {
         soltarStt();
         if (tts != null) tts.shutdown();
         hilo.shutdownNow();
-        estado("Apagado");
+        estado("Apagado", APAGADO);
         super.onDestroy();
     }
 
@@ -206,10 +231,10 @@ public class AsistenteService extends Service {
         if (modelo == null) {
             if (cargandoModelo) return;
             cargandoModelo = true;
-            estado("Preparando la activacion por nombre...");
+            estado("Preparando la activacion por nombre...", CARGA);
             new Thread(() -> {
                 try {
-                    File carpeta = ModeloVoz.preparar(this, this::estado);
+                    File carpeta = ModeloVoz.preparar(this, aviso -> estado(aviso, CARGA));
                     Model cargado = new Model(carpeta.getAbsolutePath());
                     principal.post(() -> {
                         modelo = cargado;
@@ -219,7 +244,7 @@ public class AsistenteService extends Service {
                 } catch (Exception e) {
                     principal.post(() -> {
                         cargandoModelo = false;
-                        estado("Sin activacion por nombre. Usa el boton Hablar.");
+                        estado("Sin activacion por nombre. Toca el microfono para hablar.", MUDO);
                         linea("No pude preparar la activacion por nombre: " + e.getMessage());
                     });
                 }
@@ -246,17 +271,17 @@ public class AsistenteService extends Service {
                 @Override
                 public void onError(Exception e) {
                     detenerVosk();
-                    estado("El microfono fallo. Usa el boton Hablar.");
+                    estado("El microfono fallo. Toca el microfono para hablar.", MUDO);
                 }
 
                 @Override
                 public void onTimeout() {
                 }
             });
-            estado("Di \"" + Ajustes.nombre(this) + "\"");
+            estado("Di \"" + Ajustes.nombre(this) + "\"", ESPERA);
         } catch (Exception e) {
             vosk = null;
-            estado("No pude abrir el microfono: " + e.getMessage());
+            estado("No pude abrir el microfono: " + e.getMessage(), MUDO);
         }
     }
 
@@ -269,7 +294,7 @@ public class AsistenteService extends Service {
             return;
         }
         if (oido.isEmpty()) return;
-        estado("Di \"" + Ajustes.nombre(this) + "\"  (oigo: " + oido + ")");
+        estado("Di \"" + Ajustes.nombre(this) + "\"  (oigo: " + oido + ")", ESPERA);
         if (contieneNombre(oido)) {
             detenerVosk();
             pitido();
@@ -290,6 +315,15 @@ public class AsistenteService extends Service {
             String v = normalizar(variante);
             if (v.trim().isEmpty()) continue;
             if (texto.contains(v)) return true;
+        }
+        return false;
+    }
+
+    private boolean soloNombre(String dicho) {
+        String texto = normalizar(dicho).trim();
+        for (String variante : Ajustes.nombres(this).split(",")) {
+            String v = normalizar(variante).trim();
+            if (!v.isEmpty() && (texto.equals(v) || texto.equals("oye " + v) || texto.equals("hola " + v))) return true;
         }
         return false;
     }
@@ -333,7 +367,7 @@ public class AsistenteService extends Service {
             stt.setRecognitionListener(new android.speech.RecognitionListener() {
                 @Override
                 public void onReadyForSpeech(Bundle params) {
-                    estado("Te escucho...");
+                    estado("Te escucho...", ESCUCHA);
                 }
 
                 @Override
@@ -342,6 +376,8 @@ public class AsistenteService extends Service {
 
                 @Override
                 public void onRmsChanged(float rmsdB) {
+                    Pantalla p = pantalla;
+                    if (p != null) p.nivel((rmsdB + 2f) / 12f);
                 }
 
                 @Override
@@ -350,7 +386,7 @@ public class AsistenteService extends Service {
 
                 @Override
                 public void onEndOfSpeech() {
-                    estado("Pensando...");
+                    estado("Pensando...", PIENSA);
                 }
 
                 @Override
@@ -374,6 +410,7 @@ public class AsistenteService extends Service {
                     ArrayList<String> frases = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
                     String dicho = frases == null || frases.isEmpty() ? "" : frases.get(0).trim();
                     if (dicho.isEmpty()) terminar();
+                    else if (soloNombre(dicho)) escucharOrden();
                     else procesar(dicho, true);
                 }
 
@@ -414,18 +451,18 @@ public class AsistenteService extends Service {
 
     private void procesar(String texto, boolean porVoz) {
         ocupado = true;
-        linea("Tu: " + texto);
+        linea(YO, texto);
         String simple = normalizar(texto).trim();
         if (porVoz && (simple.equals("adios") || simple.equals("hasta luego") || simple.equals("eso es todo")
                 || simple.equals("nada mas") || simple.equals("gracias"))) {
             hablar("Hasta luego.", false);
             return;
         }
-        estado("Pensando...");
+        estado("Pensando...", PIENSA);
         hilo.execute(() -> {
             String respuesta = Cerebro.responder(this, historial, texto);
             principal.post(() -> {
-                linea(Ajustes.nombre(this) + ": " + respuesta);
+                linea(ASISTENTE, respuesta);
                 hablar(respuesta, porVoz);
             });
         });
@@ -438,11 +475,12 @@ public class AsistenteService extends Service {
     private void hablar(String texto, boolean seguir) {
         seguirEscuchando = seguir;
         String limpio = paraVoz(texto);
+        if ("Hasta luego.".equals(texto)) linea(ASISTENTE, texto);
         if (!ttsListo || limpio.isEmpty()) {
             alTerminarDeHablar();
             return;
         }
-        estado("Hablando...");
+        estado("Hablando...", HABLA);
         Bundle parametros = new Bundle();
         parametros.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC);
         if (tts.speak(limpio, TextToSpeech.QUEUE_FLUSH, parametros, "respuesta") != TextToSpeech.SUCCESS) {
@@ -469,7 +507,6 @@ public class AsistenteService extends Service {
 
     private void terminar() {
         ocupado = false;
-        if (Ajustes.despertar(this)) iniciarDespertar();
-        else estado("Listo. Toca Hablar o escribe.");
+        reposo();
     }
 }
