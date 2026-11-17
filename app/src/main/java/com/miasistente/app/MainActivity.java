@@ -395,6 +395,22 @@ public class MainActivity extends Activity implements AsistenteService.Pantalla 
             }).start();
         });
 
+        boton(forma, "Probar conexion", v -> {
+            String b = base.getText().toString().trim();
+            String c = clave.getText().toString().trim();
+            String m = modelo.getText().toString().trim();
+            Toast.makeText(this, "Probando... puede tardar hasta 45 segundos", Toast.LENGTH_SHORT).show();
+            new Thread(() -> {
+                String resultado = Cerebro.probar(b, c, m);
+                runOnUiThread(() -> {
+                    if (!isFinishing()) {
+                        new AlertDialog.Builder(this).setTitle("Prueba de conexion")
+                                .setMessage(resultado).setPositiveButton("OK", null).show();
+                    }
+                });
+            }).start();
+        });
+
         EditText nombre = campo(forma, "Nombre de activacion (variantes separadas por coma)", Ajustes.nombres(this), false);
         TextView consejo = new TextView(this);
         consejo.setText("Elige una palabra comun en espanol. Bajo la cara veras lo que oigo: "

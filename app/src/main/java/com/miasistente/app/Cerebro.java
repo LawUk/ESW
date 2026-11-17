@@ -45,7 +45,7 @@ public class Cerebro {
         try {
             con = (HttpURLConnection) new URL(url).openConnection();
             con.setConnectTimeout(15000);
-            con.setReadTimeout(60000);
+            con.setReadTimeout(45000);
             con.setRequestProperty(cabecera, valor);
             con.setRequestProperty("Content-Type", "application/json");
             con.setRequestProperty("User-Agent", "AsistenteAndroid/1.0");
@@ -62,6 +62,10 @@ public class Cerebro {
             return new JSONObject(texto);
         } catch (ErrorApi e) {
             throw e;
+        } catch (java.net.SocketTimeoutException e) {
+            throw new ErrorApi(-1, "El servicio no respondio a tiempo");
+        } catch (java.net.UnknownHostException e) {
+            throw new ErrorApi(0, "Sin internet o no encuentro el servidor");
         } catch (Exception e) {
             throw new ErrorApi(0, String.valueOf(e.getMessage()));
         } finally {
@@ -132,6 +136,23 @@ public class Cerebro {
         }
         Collections.sort(ids);
         return ids;
+    }
+
+    /** Pregunta minima, sin herramientas, para saber si la clave y el modelo responden y cuanto tardan. */
+    static String probar(String base, String clave, String modelo) {
+        long inicio = System.currentTimeMillis();
+        try {
+            JSONObject cuerpo = new JSONObject().put("model", modelo).put("messages", new JSONArray()
+                    .put(new JSONObject().put("role", "user").put("content", "Responde solo: hola")));
+            JSONObject r = http(base + "/chat/completions", "Authorization", "Bearer " + clave, cuerpo);
+            String texto = r.getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("content");
+            return "Funciona. Respondio en " + (System.currentTimeMillis() - inicio) / 1000.0 + " segundos: " + texto;
+        } catch (ErrorApi e) {
+            return "Fallo despues de " + (System.currentTimeMillis() - inicio) / 1000 + " segundos (codigo "
+                    + e.codigo + "): " + e.getMessage();
+        } catch (JSONException e) {
+            return "Respondio algo que no entendi: " + e.getMessage();
+        }
     }
 
     // --------------------------------------------------------- herramientas
@@ -301,17 +322,24 @@ public class Cerebro {
             historial.add(new JSONObject().put("role", "user").put("content", mensaje));
             JSONArray herramientas = herramientas();
             boolean conHerramientas = true;
+            boolean pensarPoco = true;
             for (int vuelta = 0; vuelta < 6; vuelta++) {
                 JSONArray mensajes = new JSONArray()
                         .put(new JSONObject().put("role", "system").put("content", instrucciones(ctx)));
                 for (JSONObject m : historial) mensajes.put(m);
                 JSONObject cuerpo = new JSONObject().put("model", Ajustes.modelo(ctx)).put("messages", mensajes);
                 if (conHerramientas) cuerpo.put("tools", herramientas);
+                if (esGoogle && pensarPoco) cuerpo.put("reasoning_effort", "low");
                 JSONObject r;
                 try {
                     r = pedir(base + "/chat/completions", "Authorization", "Bearer " + clave, cuerpo);
                 } catch (ErrorApi e) {
                     String motivo = String.valueOf(e.getMessage()).toLowerCase(Locale.ROOT);
+                    if (pensarPoco && e.codigo == 400 && (motivo.contains("reasoning") || motivo.contains("thinking"))) {
+                        pensarPoco = false;
+                        vuelta--;
+                        continue;
+                    }
                     boolean sinSoporte = motivo.contains("function calling") || motivo.contains("tool use")
                             || motivo.contains("tools is not supported") || motivo.contains("does not support tools");
                     if (!conHerramientas || !sinSoporte) throw e;
@@ -351,6 +379,10 @@ public class Cerebro {
             return "Me enrede con esa tarea. Intenta pedirla en partes.";
         } catch (ErrorApi e) {
             while (historial.size() > inicio) historial.remove(historial.size() - 1);
+            if (e.codigo == -1) {
+                return "El modelo tardo mas de 45 segundos en responder. Suele pasar cuando Gemini esta saturado "
+                        + "o con modelos pro. Usa Groq o un modelo flash-lite, y prueba con el boton Probar conexion de Ajustes.";
+            }
             if (e.codigo == 0) return "No pude comunicarme con el servicio. Detalle: " + e.getMessage();
             if (e.codigo == 500 || e.codigo == 503 || e.codigo == 529) {
                 return "El modelo esta saturado en este momento. Prueba otro modelo en Ajustes, o usa Groq.";
