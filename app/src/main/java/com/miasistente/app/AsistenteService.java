@@ -78,6 +78,10 @@ public class AsistenteService extends Service {
         return new ArrayList<>(LINEAS);
     }
 
+    private static synchronized void borrarLineas() {
+        LINEAS.clear();
+    }
+
     private static synchronized void anotar(int quien, String texto) {
         LINEAS.add(new String[]{String.valueOf(quien), texto});
         while (LINEAS.size() > 200) LINEAS.remove(0);
@@ -201,6 +205,10 @@ public class AsistenteService extends Service {
                     if (ocupado) linea("Espera un momento, sigo con lo anterior.");
                     else procesar(texto.trim(), false);
                 }
+                break;
+            case "BORRAR":
+                historial.clear();
+                borrarLineas();
                 break;
             case "MUDO":
             case "RECARGAR":
@@ -462,7 +470,8 @@ public class AsistenteService extends Service {
         }
         estado("Pensando...", PIENSA);
         hilo.execute(() -> {
-            String respuesta = Cerebro.responder(this, historial, texto);
+            String respuesta = Cerebro.responder(this, historial, texto,
+                    (herramienta, resultado) -> linea(SISTEMA, aviso(herramienta, resultado)));
             principal.post(() -> {
                 linea(ASISTENTE, respuesta);
                 hablar(respuesta, porVoz);
@@ -471,7 +480,34 @@ public class AsistenteService extends Service {
     }
 
     private static String paraVoz(String texto) {
-        return texto.replaceAll("https?://\\S+", "").replaceAll("[*_#`>|\\[\\]]", "").replaceAll("\\s+", " ").trim();
+        return Voz.hablable(texto);
+    }
+
+    /** Linea corta que se ve en la conversacion cuando el asistente usa una herramienta. */
+    private static String aviso(String herramienta, JSONObject resultado) {
+        String accion;
+        switch (herramienta) {
+            case "agregar_pendiente": accion = "Guardando recordatorio"; break;
+            case "listar_pendientes": accion = "Revisando pendientes"; break;
+            case "completar_pendiente": accion = "Marcando pendiente"; break;
+            case "poner_alarma": accion = "Poniendo alarma"; break;
+            case "poner_temporizador": accion = "Iniciando temporizador"; break;
+            case "listar_alarmas": accion = "Revisando alarmas"; break;
+            case "cancelar_alarma": accion = "Cancelando alarma"; break;
+            case "calcular": accion = "Calculando"; break;
+            case "clima": accion = "Consultando el clima"; break;
+            case "tipo_de_cambio": accion = "Consultando el tipo de cambio"; break;
+            case "precio_cripto": accion = "Consultando criptomonedas"; break;
+            case "noticias": accion = "Leyendo noticias"; break;
+            case "buscar_en_internet": accion = "Buscando en internet"; break;
+            case "recordar_dato": accion = "Guardando en memoria"; break;
+            case "olvidar_dato": accion = "Borrando de memoria"; break;
+            default: accion = herramienta;
+        }
+        if (resultado != null && resultado.has("error")) {
+            return "\u26A0 " + accion + ": " + resultado.optString("error");
+        }
+        return "\u2713 " + accion;
     }
 
     private void hablar(String texto, boolean seguir) {

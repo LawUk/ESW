@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<style>
+  html, body { margin: 0; padding: 0; background: #0B0F1A; color: #E5E7EB;
+    font-family: system-ui, sans-serif; font-size: 16px; line-height: 1.45; }
+  #chat { display: flex; flex-direction: column; gap: 8px; padding: 4px 2px 12px; }
+  .b { max-width: 85%; padding: 10px 14px; border-radius: 18px; word-wrap: break-word; overflow-x: auto; }
+  .yo { align-self: flex-end; background: #2563EB; color: #fff; }
+  .as { align-self: flex-start; background: #141C2E; }
+  .si { align-self: center; color: #94A3B8; font-size: 13px; padding: 2px 8px; text-align: center; }
+  .vacio { color: #64748B; text-align: center; margin-top: 30%; font-size: 15px; }
+  code { background: #0B0F1A; padding: 1px 5px; border-radius: 6px; font-size: 14px; }
+  .katex-display { margin: 8px 0; overflow-x: auto; overflow-y: hidden; }
+  b { color: #fff; }
+</style>
+</head>
+<body>
+<div id="chat"><div class="vacio" id="vacio">Di mi nombre, toca el microfono o escribe una pregunta.</div></div>
+<script>
+  var listoKatex = false;
+  var opcionesMate = { throwOnError: false, delimiters: [
+    { left: "$$", right: "$$", display: true }, { left: "\\[", right: "\\]", display: true },
+    { left: "$", right: "$", display: false }, { left: "\\(", right: "\\)", display: false } ] };
+
+  function esc(t) { return t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+  // Formato sencillo: negritas, codigo, listas y saltos de linea. Las formulas se apartan antes
+  // para que el formato no las rompa, y luego KaTeX las dibuja.
+  function formato(t) {
+    var mates = [];
+    t = t.replace(/\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$[^$\n]+?\$/g, function (m) {
+      mates.push(m); return "\u0000" + (mates.length - 1) + "\u0000";
+    });
+    t = esc(t)
+      .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/^\s*[-*]\s+/gm, "• ")
+      .replace(/^\s*#+\s*/gm, "")
+      .replace(/\n/g, "<br>");
+    return t.replace(/\u0000(\d+)\u0000/g, function (_, i) { return esc(mates[+i]); });
+  }
+
+  function dibujar(el) {
+    if (listoKatex && window.renderMathInElement) {
+      try { renderMathInElement(el, opcionesMate); } catch (e) {}
+    }
+  }
+
+  function agregar(quien, texto) {
+    var v = document.getElementById("vacio"); if (v) v.remove();
+    var d = document.createElement("div");
+    d.className = "b " + (quien === 0 ? "yo" : quien === 1 ? "as" : "si");
+    d.innerHTML = quien === 2 ? esc(texto) : formato(texto);
+    document.getElementById("chat").appendChild(d);
+    if (quien === 1) dibujar(d);
+    window.scrollTo(0, document.body.scrollHeight);
+  }
+
+  function limpiar() { document.getElementById("chat").innerHTML = ""; }
+
+  function katexListo() {
+    listoKatex = true;
+    var burbujas = document.querySelectorAll(".as");
+    for (var i = 0; i < burbujas.length; i++) dibujar(burbujas[i]);
+    window.scrollTo(0, document.body.scrollHeight);
+  }
+</script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" onload="katexListo()"></script>
+</body>
+</html>

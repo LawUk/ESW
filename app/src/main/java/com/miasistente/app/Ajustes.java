@@ -3,6 +3,12 @@ package com.miasistente.app;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.util.Locale;
+
 /** Preferencias guardadas en el telefono. */
 public class Ajustes {
     public static final String BASE_GROQ = "https://api.groq.com/openai/v1";
@@ -30,6 +36,58 @@ public class Ajustes {
     public static String nombre(Context c) {
         String n = nombres(c).split(",")[0].trim();
         return n.isEmpty() ? "Luna" : n;
+    }
+
+    /** Ciudad del usuario para el clima. */
+    public static String ciudad(Context c) { return p(c).getString("ciudad", "").trim(); }
+
+    public static void ciudad(Context c, String ciudad) {
+        p(c).edit().putString("ciudad", ciudad.trim()).apply();
+    }
+
+    /** Datos que el usuario pidio recordar; se le dan al modelo en cada conversacion. */
+    public static synchronized JSONArray memoria(Context c) {
+        try {
+            return new JSONArray(p(c).getString("memoria", "[]"));
+        } catch (JSONException e) {
+            return new JSONArray();
+        }
+    }
+
+    public static synchronized JSONObject recordar(Context c, String dato) throws JSONException {
+        if (dato == null || dato.trim().isEmpty()) return new JSONObject().put("error", "No hay nada que recordar.");
+        JSONArray lista = memoria(c);
+        if (lista.length() >= 60) return new JSONObject().put("error", "Ya tengo demasiados datos guardados; pide borrar alguno.");
+        lista.put(dato.trim());
+        p(c).edit().putString("memoria", lista.toString()).apply();
+        return new JSONObject().put("guardado", dato.trim());
+    }
+
+    public static synchronized JSONObject olvidar(Context c, String texto) throws JSONException {
+        String buscado = texto == null ? "" : texto.trim().toLowerCase(Locale.ROOT);
+        if (buscado.isEmpty()) return new JSONObject().put("error", "Dime que dato borrar.");
+        JSONArray lista = memoria(c);
+        JSONArray quedan = new JSONArray();
+        JSONArray borrados = new JSONArray();
+        for (int i = 0; i < lista.length(); i++) {
+            String d = lista.optString(i);
+            if (d.toLowerCase(Locale.ROOT).contains(buscado)) borrados.put(d);
+            else quedan.put(d);
+        }
+        p(c).edit().putString("memoria", quedan.toString()).apply();
+        if (borrados.length() == 0) return new JSONObject().put("error", "No encontre ese dato.");
+        return new JSONObject().put("borrados", borrados);
+    }
+
+    public static synchronized void borrarMemoria(Context c) {
+        p(c).edit().putString("memoria", "[]").apply();
+    }
+
+    /** Clave opcional de Groq, solo para buscar en internet cuando el modelo principal es Gemini. */
+    public static String claveBusqueda(Context c) { return p(c).getString("clave_busqueda", "").trim(); }
+
+    public static void claveBusqueda(Context c, String clave) {
+        p(c).edit().putString("clave_busqueda", clave.trim()).apply();
     }
 
     public static boolean despertar(Context c) { return p(c).getBoolean("despertar", true); }

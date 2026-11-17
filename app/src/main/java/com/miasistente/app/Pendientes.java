@@ -51,6 +51,9 @@ public class Pendientes {
         if (fechaHora != null && !fechaHora.trim().isEmpty() && cuando == null) {
             return new JSONObject().put("error", "No entendi la fecha. Usa el formato AAAA-MM-DD HH:MM.");
         }
+        if (cuando != null && cuando.getTime() < System.currentTimeMillis() - 60000) {
+            return new JSONObject().put("error", "Esa fecha y hora ya pasaron. Revisa el dia.");
+        }
         JSONArray lista = cargar(c);
         int id = 1;
         for (int i = 0; i < lista.length(); i++) id = Math.max(id, lista.getJSONObject(i).optInt("id") + 1);
@@ -92,6 +95,18 @@ public class Pendientes {
         guardar(c, lista);
         if (marcados.length() == 0) return new JSONObject().put("error", "No encontre ese pendiente.");
         return new JSONObject().put("completados", marcados);
+    }
+
+    /** Tras reiniciar el telefono, vuelve a programar los avisos que aun no llegan. */
+    public static synchronized void reprogramar(Context c) {
+        JSONArray lista = cargar(c);
+        long ahora = System.currentTimeMillis();
+        for (int i = 0; i < lista.length(); i++) {
+            JSONObject p = lista.optJSONObject(i);
+            if (p == null || p.optBoolean("hecho")) continue;
+            Date cuando = fecha(p.optString("cuando", ""));
+            if (cuando != null && cuando.getTime() > ahora) programar(c, p.optInt("id"), p.optString("texto"), cuando.getTime());
+        }
     }
 
     private static PendingIntent aviso(Context c, int id, String texto) {

@@ -16,12 +16,17 @@ import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.view.inputmethod.EditorInfo;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -41,8 +46,9 @@ public class MainActivity extends Activity implements AsistenteService.Pantalla 
     private Carita carita;
     private TextView estado;
     private TextView botonMudo;
-    private LinearLayout lista;
-    private ScrollView scroll;
+    private WebView chat;
+    private boolean chatListo;
+    private final List<String> pendientesChat = new ArrayList<>();
     private EditText entrada;
 
     private int dp(int valor) {
@@ -136,12 +142,22 @@ public class MainActivity extends Activity implements AsistenteService.Pantalla 
         if (horizontal) panelChat.setPadding(dp(16), 0, 0, 0);
         else panelChat.setPadding(0, dp(12), 0, 0);
 
-        scroll = new ScrollView(this);
-        lista = new LinearLayout(this);
-        lista.setOrientation(LinearLayout.VERTICAL);
-        lista.setPadding(0, 0, 0, dp(8));
-        scroll.addView(lista);
-        panelChat.addView(scroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        chat = new WebView(this);
+        chat.setBackgroundColor(FONDO);
+        WebSettings ajustesWeb = chat.getSettings();
+        ajustesWeb.setJavaScriptEnabled(true); // solo para dibujar el chat y las formulas
+        ajustesWeb.setAllowFileAccess(false);
+        ajustesWeb.setAllowContentAccess(false);
+        chat.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView vista, String url) {
+                chatListo = true;
+                for (String js : pendientesChat) chat.evaluateJavascript(js, null);
+                pendientesChat.clear();
+            }
+        });
+        chat.loadUrl("file:///android_asset/chat.html");
+        panelChat.addView(chat, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
         LinearLayout filaTexto = new LinearLayout(this);
         filaTexto.setGravity(Gravity.CENTER_VERTICAL);
@@ -189,12 +205,11 @@ public class MainActivity extends Activity implements AsistenteService.Pantalla 
         super.onResume();
         visible = true;
         AsistenteService.pantalla = this;
-        lista.removeAllViews();
+        js("limpiar()");
         for (String[] l : AsistenteService.lineas()) burbuja(Integer.parseInt(l[0]), l[1]);
         estado.setText(AsistenteService.ultimoEstado);
         carita.modo(AsistenteService.ultimoModo);
         pintarMudo();
-        bajar();
     }
 
     @Override
@@ -208,10 +223,7 @@ public class MainActivity extends Activity implements AsistenteService.Pantalla 
 
     @Override
     public void linea(int quien, String texto) {
-        runOnUiThread(() -> {
-            burbuja(quien, texto);
-            bajar();
-        });
+        runOnUiThread(() -> burbuja(quien, texto));
     }
 
     @Override
@@ -228,37 +240,14 @@ public class MainActivity extends Activity implements AsistenteService.Pantalla 
         carita.nivel(nivel);
     }
 
-    private void burbuja(int quien, String texto) {
-        TextView t = new TextView(this);
-        t.setText(texto);
-        t.setTextIsSelectable(true);
-        LinearLayout.LayoutParams medida = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        medida.topMargin = dp(8);
-        if (quien == AsistenteService.SISTEMA) {
-            t.setTextSize(13);
-            t.setTextColor(TENUE);
-            t.setGravity(Gravity.CENTER);
-            medida.gravity = Gravity.CENTER_HORIZONTAL;
-        } else {
-            t.setTextSize(16);
-            t.setTextColor(0xFFFFFFFF);
-            t.setPadding(dp(14), dp(10), dp(14), dp(10));
-            if (quien == AsistenteService.YO) {
-                t.setBackground(fondo(BURBUJA_MIA, 18));
-                medida.gravity = Gravity.END;
-                medida.leftMargin = dp(48);
-            } else {
-                t.setBackground(fondo(PANEL, 18));
-                medida.gravity = Gravity.START;
-                medida.rightMargin = dp(48);
-            }
-        }
-        lista.addView(t, medida);
+    /** Ejecuta JavaScript en el chat; si la pagina aun carga, lo guarda para despues. */
+    private void js(String codigo) {
+        if (chatListo) chat.evaluateJavascript(codigo, null);
+        else pendientesChat.add(codigo);
     }
 
-    private void bajar() {
-        scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
+    private void burbuja(int quien, String texto) {
+        js("agregar(" + quien + "," + JSONObject.quote(texto) + ")");
     }
 
     private void pintarMudo() {
@@ -375,6 +364,13 @@ public class MainActivity extends Activity implements AsistenteService.Pantalla 
             modelo.setText(Ajustes.MODELO_GEMINI);
         });
 
+        EditText claveBusqueda = campo(forma,
+                "Clave de Groq para buscar en internet (opcional, si usas Gemini)", Ajustes.claveBusqueda(this), true);
+        TextView notaBusqueda = new TextView(this);
+        notaBusqueda.setText("La busqueda de Google no viene en el nivel gratuito de Gemini. Con una clave gratis de "
+                + "Groq busco en internet; sin ella uso Google News para lo actual y Wikipedia para conceptos.");
+        forma.addView(notaBusqueda);
+
         boton(forma, "Elegir modelo de la lista", v -> {
             String b = base.getText().toString().trim();
             String c = clave.getText().toString().trim();
@@ -417,12 +413,36 @@ public class MainActivity extends Activity implements AsistenteService.Pantalla 
                 + "si tu nombre aparece escrito distinto, agrega esa forma como variante.");
         forma.addView(consejo);
 
+        EditText ciudad = campo(forma, "Tu ciudad (para el clima)", Ajustes.ciudad(this), false);
+
+        TextView datos = new TextView(this);
+        datos.setText("Memoria: " + Ajustes.memoria(this).length() + " datos guardados sobre ti");
+        datos.setPadding(0, dp(16), 0, 0);
+        forma.addView(datos);
+        boton(forma, "Borrar los datos que recuerdo", v -> new AlertDialog.Builder(this)
+                .setMessage("Se borraran todos los datos que me pediste recordar.")
+                .setPositiveButton("Borrar", (d, cual) -> {
+                    Ajustes.borrarMemoria(this);
+                    datos.setText("Memoria: 0 datos guardados sobre ti");
+                })
+                .setNegativeButton("Cancelar", null).show());
+        boton(forma, "Borrar la conversacion", v -> {
+            mandar("BORRAR", null);
+            js("limpiar()");
+            Toast.makeText(this, "Conversacion borrada", Toast.LENGTH_SHORT).show();
+        });
+
         TextView permisos = new TextView(this);
         permisos.setText("Permisos opcionales");
         permisos.setPadding(0, dp(16), 0, 0);
         forma.addView(permisos);
-        boton(forma, "Mostrar sobre otras apps (alarmas con la app cerrada)",
-                v -> abrir(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName()))));
+        boton(forma, "Alarmas exactas (si las alarmas suenan tarde)", v -> {
+            if (Build.VERSION.SDK_INT >= 31) {
+                abrir(new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:" + getPackageName())));
+            } else {
+                Toast.makeText(this, "Tu Android no necesita este permiso", Toast.LENGTH_SHORT).show();
+            }
+        });
         boton(forma, "Bateria sin restricciones (para que no se apague)",
                 v -> abrir(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)));
 
@@ -434,6 +454,8 @@ public class MainActivity extends Activity implements AsistenteService.Pantalla 
                 .setPositiveButton("Guardar", (d, cual) -> {
                     Ajustes.guardar(this, base.getText().toString(), clave.getText().toString(),
                             modelo.getText().toString(), nombre.getText().toString());
+                    Ajustes.claveBusqueda(this, claveBusqueda.getText().toString());
+                    Ajustes.ciudad(this, ciudad.getText().toString());
                     mandar("RECARGAR", null);
                 })
                 .setNegativeButton("Cancelar", null)
